@@ -22,6 +22,7 @@ function extractAdId(url: string | null): string | undefined {
 function compressLead(lead: RawLead): CompressedLead {
   const c: CompressedLead = {};
   
+  if (lead.srNo !== undefined) c.sr = lead.srNo;
   if (lead.id) c.pageId = lead.id;
   if (lead.name) c.name = lead.name;
   if (lead.phone) c.phone = lead.phone;
@@ -48,6 +49,7 @@ function decompressLead(c: CompressedLead, campaignName?: string, campaignId?: s
   }
 
   return {
+    srNo: c.sr,
     id: c.pageId || '',
     name: c.name || null,
     phone: c.phone || null,
@@ -74,6 +76,20 @@ export async function saveCampaign(
 ): Promise<string> {
   const campaignRef = doc(collection(db, 'campaigns'));
   const campaignId = campaignRef.id;
+
+  onProgress?.(`Assigning Serial Numbers...`);
+  const statsRef = doc(db, 'system', 'stats');
+  const statsSnap = await getDoc(statsRef);
+  const currentStats = statsSnap.exists()
+    ? statsSnap.data()
+    : { totalLeads: 0, totalCampaigns: 0, lastSrNo: 0 };
+
+  let currentSrNo = currentStats.lastSrNo || currentStats.totalLeads || 0;
+  
+  leads.forEach(lead => {
+    currentSrNo++;
+    lead.srNo = currentSrNo;
+  });
 
   // Split and compress leads into chunks of 1000
   const compressedChunks: CompressedLead[][] = [];
@@ -138,20 +154,73 @@ export async function saveCampaign(
     onProgress?.('Campaign saved!');
   }
 
-  // Update global stats
-  const statsRef = doc(db, 'system', 'stats');
-  const statsSnap = await getDoc(statsRef);
-  const current = statsSnap.exists()
-    ? statsSnap.data()
-    : { totalLeads: 0, totalCampaigns: 0 };
-
   await setDoc(statsRef, {
-    totalLeads: (current.totalLeads || 0) + leads.length,
-    totalCampaigns: (current.totalCampaigns || 0) + 1,
+    totalLeads: (currentStats.totalLeads || 0) + leads.length,
+    totalCampaigns: (currentStats.totalCampaigns || 0) + 1,
+    lastSrNo: currentSrNo,
     lastUpdated: serverTimestamp(),
   });
 
   return campaignId;
+}
+
+// ─── UPDATE: Apply Smart Merged Fields to Existing Chunks ───────────────────
+
+export async function updateMergedLeads(
+  leadsToUpdate: RawLead[],
+  onProgress?: (message: string) => void
+): Promise<void> {
+  if (leadsToUpdate.length === 0) return;
+
+  const chunksToUpdate = new Map<string, RawLead[]>();
+
+  for (const lead of leadsToUpdate) {
+    if (lead._campaignId && lead._chunkId) {
+      const key = `${lead._campaignId}/${lead._chunkId}`;
+      if (!chunksToUpdate.has(key)) chunksToUpdate.set(key, []);
+      chunksToUpdate.get(key)!.push(lead);
+    }
+  }
+
+  const totalChunks = chunksToUpdate.size;
+  let processed = 0;
+  
+  // A Firestore batch can hold up to 500 operations
+  let batch = writeBatch(db);
+  let batchOps = 0;
+
+  for (const [key, leads] of chunksToUpdate.entries()) {
+    const [campaignId, chunkId] = key.split('/');
+    const chunkRef = doc(collection(db, 'campaigns', campaignId, 'chunks'), chunkId);
+    const chunkSnap = await getDoc(chunkRef);
+    
+    if (chunkSnap.exists()) {
+      const data = chunkSnap.data() as { c: CompressedLead[] };
+      const compressedArray = data.c;
+      
+      for (const lead of leads) {
+        if (lead._chunkIndex !== undefined && compressedArray[lead._chunkIndex]) {
+          compressedArray[lead._chunkIndex] = compressLead(lead);
+        }
+      }
+      
+      batch.update(chunkRef, { c: compressedArray });
+      batchOps++;
+      processed++;
+
+      if (batchOps >= 400) {
+        await batch.commit();
+        batch = writeBatch(db);
+        batchOps = 0;
+      }
+      
+      onProgress?.(`Updating enriched leads: ${processed}/${totalChunks} batches...`);
+    }
+  }
+
+  if (batchOps > 0) {
+    await batch.commit();
+  }
 }
 
 // ─── READ: Fetch all campaigns ───────────────────────────────────────────────
@@ -188,9 +257,11 @@ export async function fetchLeadsForCampaign(
     // Read the 'c' array which holds the compressed leads
     const data = chunkDoc.data() as { c: CompressedLead[] };
     if (data.c && Array.isArray(data.c)) {
-      const decompressed = data.c.map(compressed => {
+      const decompressed = data.c.map((compressed, index) => {
         const raw = decompressLead(compressed, campaignName, campaignId);
         if (timestampStr) raw.addedAt = timestampStr;
+        raw._chunkId = chunkDoc.id;
+        raw._chunkIndex = index;
         return raw;
       });
       allLeads.push(...decompressed);
@@ -214,16 +285,34 @@ export async function fetchAllLeads(): Promise<{
     allLeads.push(...leads);
   }
 
+  // ─── LEGACY LEAD SERIAL NUMBER BACKFILL ───
+  // Old leads in the database won't have an srNo.
+  // Since campaigns are fetched newest-first, allLeads is ordered newest-first.
+  // We can assign stable Sr. Numbers to old leads automatically.
+  let oldLeadsCount = 0;
+  for (const lead of allLeads) {
+    if (lead.srNo === undefined) oldLeadsCount++;
+  }
+
+  let currentOldSrNo = oldLeadsCount;
+  for (const lead of allLeads) {
+    if (lead.srNo === undefined) {
+      // The newest of the "old" leads gets the highest number
+      lead.srNo = currentOldSrNo;
+      currentOldSrNo--;
+    }
+  }
+
   return { leads: allLeads, campaigns };
 }
 
 // ─── UPDATE: Mark leads as WhatsApp sent ────────────────────────────────────
 
-export async function markWhatsappSent(
+export async function toggleWhatsappSent(
   campaignId: string,
-  phoneNumbers: string[]
+  phone: string,
+  status: boolean
 ): Promise<void> {
-  const phoneSet = new Set(phoneNumbers);
   const chunksSnap = await getDocs(
     collection(db, 'campaigns', campaignId, 'chunks')
   );
@@ -239,9 +328,9 @@ export async function markWhatsappSent(
 
     const updatedChunk = data.c.map(lead => {
       // Decompressing partially just to check phone
-      if (lead.phone && phoneSet.has(lead.phone) && !lead.whatsappSent) {
+      if (lead.phone === phone && lead.whatsappSent !== status) {
         changed = true;
-        return { ...lead, whatsappSent: true }; // s = whatsappSent
+        return { ...lead, whatsappSent: status }; // update status
       }
       return lead;
     });

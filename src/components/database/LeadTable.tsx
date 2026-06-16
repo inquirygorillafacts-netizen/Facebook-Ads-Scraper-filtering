@@ -30,7 +30,7 @@ function InstagramIcon({ className }: { className?: string }) {
   );
 }
 import { toast } from "sonner";
-import { markWhatsappSent } from "@/lib/firestore";
+import { toggleWhatsappSent } from "@/lib/firestore";
 import { useAppStore } from "@/store/useAppStore";
 import { LEADS_PER_PAGE } from "@/constants";
 import type { RawLead } from "@/types";
@@ -56,14 +56,16 @@ export function LeadTable({ leads }: LeadTableProps) {
 
   const handleWhatsappToggle = useCallback(
     async (lead: RawLead) => {
-      if (!lead.phone || lead.whatsappSent) return;
+      if (!lead.phone) return;
+
+      const newStatus = !lead.whatsappSent;
 
       // Optimistic update
-      updateLeadWhatsapp(lead.id, lead.phone);
+      updateLeadWhatsapp(lead.id, lead.phone, newStatus);
 
       // Background Firestore update
       if (lead._campaignId) {
-        markWhatsappSent(lead._campaignId, [lead.phone]).catch(console.error);
+        toggleWhatsappSent(lead._campaignId, lead.phone, newStatus).catch(console.error);
       }
     },
     [updateLeadWhatsapp]
@@ -86,8 +88,8 @@ export function LeadTable({ leads }: LeadTableProps) {
           <table className="w-full lead-table">
             <thead>
               <tr className="border-b border-border bg-gray-50/50">
-                <th className="text-left text-xs font-medium text-text-muted uppercase tracking-wider px-4 py-3 w-12">
-                  #
+                <th className="text-left text-xs font-medium text-text-muted uppercase tracking-wider px-4 py-3 w-16">
+                  Sr.
                 </th>
                 <th className="text-left text-xs font-medium text-text-muted uppercase tracking-wider px-4 py-3 min-w-[180px]">
                   Name
@@ -112,9 +114,9 @@ export function LeadTable({ leads }: LeadTableProps) {
                   key={`${lead.id}-${idx}`}
                   className="hover:bg-gray-50/50 transition-colors duration-100"
                 >
-                  {/* Row number */}
+                  {/* Serial number */}
                   <td className="px-4 py-3 text-xs text-text-muted font-mono">
-                    {startIndex + idx + 1}
+                    {lead.srNo ? lead.srNo : startIndex + idx + 1}
                   </td>
 
                   {/* Name */}
@@ -240,7 +242,7 @@ export function LeadTable({ leads }: LeadTableProps) {
                   <td className="px-4 py-3 text-center">
                     <button
                       onClick={() => handleWhatsappToggle(lead)}
-                      disabled={!lead.phone || lead.whatsappSent}
+                      disabled={!lead.phone}
                       className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${
                         lead.whatsappSent
                           ? "bg-success border-success"

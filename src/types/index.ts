@@ -13,6 +13,9 @@ export interface RawLead {
   addedAt: string;     // ISO timestamp string
   _campaignName?: string; // Added at runtime for display
   _campaignId?: string;   // Added at runtime for operations
+  _chunkId?: string;      // Added at runtime for smart merging updates
+  _chunkIndex?: number;   // Added at runtime for smart merging updates
+  srNo?: number;          // Global Serial Number
 }
 
 /**
@@ -21,6 +24,7 @@ export interface RawLead {
  * Null values should be entirely omitted.
  */
 export interface CompressedLead {
+  sr?: number;           // Serial Number
   pageId?: string;       // Page ID
   name?: string;         // Name
   phone?: string;        // Phone

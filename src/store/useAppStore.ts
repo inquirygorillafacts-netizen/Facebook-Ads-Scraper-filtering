@@ -25,7 +25,7 @@ interface AppState {
   setCampaigns: (campaigns: Campaign[]) => void;
   syncFromFirestore: () => Promise<void>;
   loadCache: () => boolean;
-  updateLeadWhatsapp: (leadId: string, phone: string) => void;
+  updateLeadWhatsapp: (leadId: string, phone: string, status: boolean) => void;
   addCampaignLocally: (campaign: Campaign, leads: RawLead[]) => void;
 }
 
@@ -81,11 +81,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  updateLeadWhatsapp: (leadId, phone) => {
+  updateLeadWhatsapp: (leadId, phone, status) => {
     const { leads, campaigns } = get();
     const updated = leads.map(l =>
       l.id === leadId && l.phone === phone
-        ? { ...l, whatsappSent: true }
+        ? { ...l, whatsappSent: status }
         : l
     );
     set({ leads: updated });

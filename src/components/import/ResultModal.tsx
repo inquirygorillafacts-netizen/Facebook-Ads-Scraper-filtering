@@ -14,9 +14,10 @@ import {
   Plus,
 } from "lucide-react";
 import { toast } from "sonner";
-import { saveCampaign } from "@/lib/firestore";
+import { saveCampaign, updateMergedLeads } from "@/lib/firestore";
 import { downloadCSV, downloadExcel } from "@/lib/exportHelpers";
 import { useAppStore } from "@/store/useAppStore";
+import { deduplicateAndMergeLeads, type DeduplicationResult } from "@/lib/deduplicator";
 import type { RawLead, FileStats } from "@/types";
 
 interface ResultModalProps {
@@ -42,6 +43,7 @@ export function ResultModal({
   const [saveProgress, setSaveProgress] = useState("");
   const [isSaved, setIsSaved] = useState(false);
   const [showExportType, setShowExportType] = useState(false);
+  const [finalDedupeStats, setFinalDedupeStats] = useState<DeduplicationResult["stats"] | null>(null);
 
   if (!isOpen) return null;
 
@@ -61,47 +63,67 @@ export function ResultModal({
 
   const handleSaveToFirebase = async () => {
     setIsSaving(true);
-    setSaveProgress("Preparing...");
+    setSaveProgress("Checking global duplicates...");
 
     try {
-      const campaignId = await saveCampaign(
-        {
-          name: campaignName,
-          keyword: campaignName,
-          originalFileName,
-          totalRawRows: stats.totalRawRows,
-          totalLeads: stats.validLeads,
-          duplicatesSkipped: stats.duplicatesSkipped,
-          noContactSkipped: stats.noContactSkipped,
-          phoneCount: stats.phoneCount,
-          emailCount: stats.emailCount,
-        },
-        leads,
-        (msg) => setSaveProgress(msg)
-      );
+      // Fetch all existing leads from the store to deduplicate against
+      const existingLeads = useAppStore.getState().leads;
+      
+      const dedupeResult = deduplicateAndMergeLeads(leads, existingLeads);
+      const { leadsToInsert, leadsToUpdate, stats: dedupeStats } = dedupeResult;
 
-      // Update local state
-      addCampaignLocally(
-        {
-          id: campaignId,
-          name: campaignName,
-          keyword: campaignName,
-          originalFileName,
-          totalRawRows: stats.totalRawRows,
-          totalLeads: stats.validLeads,
-          duplicatesSkipped: stats.duplicatesSkipped,
-          noContactSkipped: stats.noContactSkipped,
-          phoneCount: stats.phoneCount,
-          emailCount: stats.emailCount,
-          chunkCount: Math.ceil(leads.length / 100),
-          createdAt: new Date().toISOString(),
-          processedAt: new Date().toISOString(),
-        },
-        leads
-      );
+      // 1. Update existing leads (Smart Merging)
+      if (leadsToUpdate.length > 0) {
+        setSaveProgress("Enriching old campaigns...");
+        await updateMergedLeads(leadsToUpdate, (msg) => setSaveProgress(msg));
+      }
 
+      // 2. Insert new leads
+      if (leadsToInsert.length > 0) {
+        setSaveProgress("Saving new leads...");
+        const campaignId = await saveCampaign(
+          {
+            name: campaignName,
+            keyword: campaignName,
+            originalFileName,
+            totalRawRows: stats.totalRawRows,
+            totalLeads: leadsToInsert.length,
+            duplicatesSkipped: stats.duplicatesSkipped + dedupeStats.skipped,
+            noContactSkipped: stats.noContactSkipped,
+            phoneCount: leadsToInsert.filter(l => l.phone).length,
+            emailCount: leadsToInsert.filter(l => l.email).length,
+          },
+          leadsToInsert,
+          (msg) => setSaveProgress(msg)
+        );
+
+        // Update local state
+        addCampaignLocally(
+          {
+            id: campaignId,
+            name: campaignName,
+            keyword: campaignName,
+            originalFileName,
+            totalRawRows: stats.totalRawRows,
+            totalLeads: leadsToInsert.length,
+            duplicatesSkipped: stats.duplicatesSkipped + dedupeStats.skipped,
+            noContactSkipped: stats.noContactSkipped,
+            phoneCount: leadsToInsert.filter(l => l.phone).length,
+            emailCount: leadsToInsert.filter(l => l.email).length,
+            chunkCount: Math.ceil(leadsToInsert.length / 100),
+            createdAt: new Date().toISOString(),
+            processedAt: new Date().toISOString(),
+          },
+          leadsToInsert
+        );
+      } else {
+        // Need to update local store for the enriched fields manually
+        // But for now, user can just refresh to sync from firestore
+      }
+
+      setFinalDedupeStats(dedupeStats);
       setIsSaved(true);
-      toast.success(`${stats.validLeads} leads saved to "${campaignName}"`);
+      toast.success("Database operations completed successfully");
     } catch (error) {
       toast.error("Failed to save to Firebase", {
         description:
@@ -114,12 +136,12 @@ export function ResultModal({
 
   const statsCards = [
     { label: "Raw Rows", value: stats.totalRawRows, sublabel: "in CSV" },
-    { label: "Companies", value: stats.uniqueCompanies, sublabel: "found" },
+    { label: "Unique Contacts", value: stats.uniqueCompanies, sublabel: "found" },
     { label: "Valid Leads", value: stats.validLeads, sublabel: "extracted" },
     {
-      label: "Ads Skipped",
+      label: "Duplicates",
       value: stats.duplicatesSkipped,
-      sublabel: "same company",
+      sublabel: "within CSV",
     },
   ];
 
@@ -199,13 +221,38 @@ export function ResultModal({
           <div className="border-t border-border my-5" />
 
           {/* Actions */}
-          {isSaved ? (
+          {isSaved && finalDedupeStats ? (
             <div className="space-y-3">
-              <div className="bg-success-light rounded-lg p-4 text-center">
-                <CheckCircle2 className="w-6 h-6 text-success mx-auto mb-2" />
-                <p className="text-sm font-medium text-emerald-800">
-                  Saved! {stats.validLeads} leads added to &quot;{campaignName}&quot;
-                </p>
+              <div className="bg-success-light rounded-lg p-4">
+                <div className="flex items-center gap-2 mb-3 justify-center">
+                  <CheckCircle2 className="w-6 h-6 text-success" />
+                  <p className="font-bold text-emerald-800 text-lg">
+                    Database Updated!
+                  </p>
+                </div>
+                
+                <div className="space-y-2 bg-white/60 p-3 rounded-md border border-emerald-100">
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-emerald-900 font-medium">✨ Fresh Leads Saved:</span>
+                    <span className="font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">{finalDedupeStats.saved}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-amber-900 font-medium">⏭️ Duplicates Skipped:</span>
+                    <span className="font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full">{finalDedupeStats.skipped}</span>
+                  </div>
+                  {finalDedupeStats.updated > 0 && (
+                    <div className="flex justify-between items-center text-sm pt-2 border-t border-emerald-200/50">
+                      <span className="text-blue-900 font-medium">🔄 Old Leads Enriched:</span>
+                      <span className="font-bold text-blue-700 bg-blue-100 px-2 py-0.5 rounded-full">{finalDedupeStats.updated}</span>
+                    </div>
+                  )}
+                </div>
+                
+                {finalDedupeStats.updated > 0 && (
+                  <p className="text-[11px] text-emerald-700/80 mt-3 text-center">
+                    Missing fields in old leads were automatically filled with data from this new file!
+                  </p>
+                )}
               </div>
               <div className="flex gap-3">
                 <button

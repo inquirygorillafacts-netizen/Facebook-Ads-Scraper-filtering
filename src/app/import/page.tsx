@@ -211,6 +211,7 @@ export default function ImportPage() {
         isOpen={showCampaignName}
         detectedName={detectedName}
         onConfirm={handleCampaignNameConfirm}
+        onCancel={() => setShowCampaignName(false)}
       />
 
       {/* Result Modal */}

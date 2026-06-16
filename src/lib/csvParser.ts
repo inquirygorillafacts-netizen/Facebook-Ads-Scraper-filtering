@@ -30,15 +30,6 @@ export async function parseMetaAdsCSV(file: File): Promise<ParsedFile> {
           const rows = results.data as Record<string, string>[];
           const totalRawRows = rows.length;
 
-          // Group by Page ID for deduplication
-          const byPageId = new Map<string, Record<string, string>[]>();
-          for (const row of rows) {
-            const pageId = row[CSV_COLUMNS.PAGE_ID]?.trim();
-            if (!pageId) continue;
-            if (!byPageId.has(pageId)) byPageId.set(pageId, []);
-            byPageId.get(pageId)!.push(row);
-          }
-
           const leads: RawLead[] = [];
           let duplicatesSkipped = 0;
           let noContactSkipped = 0;
@@ -46,22 +37,56 @@ export async function parseMetaAdsCSV(file: File): Promise<ParsedFile> {
           let emailCount = 0;
           let bothCount = 0;
 
-          for (const [pageId, pageRows] of byPageId) {
-            const merged = mergeRows(pageRows);
+          const phoneMap = new Map<string, RawLead>();
+          const emailMap = new Map<string, RawLead>();
 
+          for (const row of rows) {
             // Extract phone
             const { phone, source: phoneSource } = getBestPhone(
-              merged[CSV_COLUMNS.PHONE] || null,
-              merged[CSV_COLUMNS.BODY_TEXT] || null
+              row[CSV_COLUMNS.PHONE] || null,
+              row[CSV_COLUMNS.BODY_TEXT] || null
             );
 
             // Extract email (take first if multiple)
-            const rawEmail = merged[CSV_COLUMNS.EMAIL]?.trim() || null;
-            const email = rawEmail ? rawEmail.split(/[,;]/)[0].trim() : null;
+            const rawEmail = row[CSV_COLUMNS.EMAIL]?.trim() || null;
+            const email = rawEmail ? rawEmail.split(/[,;]/)[0].trim().toLowerCase() : null;
 
             // Must have phone OR email
             if (!phone && !email) {
               noContactSkipped++;
+              continue;
+            }
+
+            // Check if we already have a lead with this phone or email in this file
+            let existingLead: RawLead | undefined;
+            if (phone && phoneMap.has(phone)) {
+              existingLead = phoneMap.get(phone);
+            } else if (email && emailMap.has(email)) {
+              existingLead = emailMap.get(email);
+            }
+
+            if (existingLead) {
+              // It's a duplicate within the file
+              duplicatesSkipped++;
+              
+              // Smart merge missing fields within the file
+              if (!existingLead.name && row[CSV_COLUMNS.PAGE_NAME]) existingLead.name = row[CSV_COLUMNS.PAGE_NAME].trim();
+              if (!existingLead.facebook && row[CSV_COLUMNS.FACEBOOK]) existingLead.facebook = row[CSV_COLUMNS.FACEBOOK].trim();
+              if (!existingLead.instagram && row[CSV_COLUMNS.INSTAGRAM]) existingLead.instagram = row[CSV_COLUMNS.INSTAGRAM].trim();
+              const url = normalizeUrl(row[CSV_COLUMNS.WEBSITE_URL]?.trim() || null);
+              if (!existingLead.website && url) existingLead.website = url;
+              if (!existingLead.adsLink && row[CSV_COLUMNS.FACEBOOK_AD_URL]) existingLead.adsLink = row[CSV_COLUMNS.FACEBOOK_AD_URL].trim();
+              if (!existingLead.landingPage && row[CSV_COLUMNS.LINK_URL]) existingLead.landingPage = row[CSV_COLUMNS.LINK_URL].trim();
+              
+              // Link them so future searches find this merged lead
+              if (phone && !phoneMap.has(phone)) {
+                 existingLead.phone = phone;
+                 phoneMap.set(phone, existingLead);
+              }
+              if (email && !emailMap.has(email)) {
+                 existingLead.email = email;
+                 emailMap.set(email, existingLead);
+              }
               continue;
             }
 
@@ -70,31 +95,35 @@ export async function parseMetaAdsCSV(file: File): Promise<ParsedFile> {
             if (email) emailCount++;
             if (phone && email) bothCount++;
 
+            // Use a random UUID for the lead ID since one page can have multiple leads
+            const leadId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15);
+
             const lead: RawLead = {
-              id: pageId,
-              name: merged[CSV_COLUMNS.PAGE_NAME]?.trim() || null,
+              id: leadId,
+              name: row[CSV_COLUMNS.PAGE_NAME]?.trim() || null,
               phone,
               phoneSource,
               email,
-              facebook: merged[CSV_COLUMNS.FACEBOOK]?.trim() ||
-                merged[CSV_COLUMNS.PAGE_PROFILE_URI]?.trim() || null,
-              instagram: merged[CSV_COLUMNS.INSTAGRAM]?.trim() || null,
-              website: normalizeUrl(merged[CSV_COLUMNS.WEBSITE_URL]?.trim() || null),
-              adsLink: merged[CSV_COLUMNS.FACEBOOK_AD_URL]?.trim() || null,
-              landingPage: merged[CSV_COLUMNS.LINK_URL]?.trim() || null,
+              facebook: row[CSV_COLUMNS.FACEBOOK]?.trim() ||
+                row[CSV_COLUMNS.PAGE_PROFILE_URI]?.trim() || null,
+              instagram: row[CSV_COLUMNS.INSTAGRAM]?.trim() || null,
+              website: normalizeUrl(row[CSV_COLUMNS.WEBSITE_URL]?.trim() || null),
+              adsLink: row[CSV_COLUMNS.FACEBOOK_AD_URL]?.trim() || null,
+              landingPage: row[CSV_COLUMNS.LINK_URL]?.trim() || null,
               whatsappSent: false,
               addedAt: new Date().toISOString(),
             };
 
             leads.push(lead);
-            duplicatesSkipped += pageRows.length - 1;
+            if (phone) phoneMap.set(phone, lead);
+            if (email) emailMap.set(email, lead);
           }
 
           resolve({
             leads,
             stats: {
               totalRawRows,
-              uniqueCompanies: byPageId.size,
+              uniqueCompanies: leads.length, // Renaming logical meaning to "Unique Contacts"
               validLeads: leads.length,
               duplicatesSkipped,
               noContactSkipped,
