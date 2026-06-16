@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { saveCampaign } from "@/lib/firestore";
-import { downloadCSV } from "@/lib/exportHelpers";
+import { downloadCSV, downloadExcel } from "@/lib/exportHelpers";
 import { useAppStore } from "@/store/useAppStore";
 import type { RawLead, FileStats } from "@/types";
 
@@ -45,13 +45,17 @@ export function ResultModal({
 
   if (!isOpen) return null;
 
-  const handleDownload = (type: "msg91" | "full") => {
-    downloadCSV(leads, type, campaignName);
-    toast.success(
-      type === "msg91"
-        ? `MSG91 CSV downloaded — ${leads.filter((l) => l.phone).length} numbers`
-        : `Full details CSV downloaded — ${leads.length} leads`
-    );
+  const handleDownload = (type: "msg91" | "full", format: "csv" | "excel") => {
+    if (format === "csv") {
+      downloadCSV(leads, type, campaignName);
+    } else {
+      downloadExcel(leads, type, campaignName);
+    }
+    
+    const count = type === "msg91" ? leads.filter((l) => l.phone).length : leads.length;
+    const typeLabel = type === "msg91" ? "MSG91 format" : "Full details";
+    toast.success(`${typeLabel} downloaded as ${format.toUpperCase()} — ${count} records`);
+    
     setShowExportType(false);
   };
 
@@ -235,7 +239,7 @@ export function ResultModal({
                     className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium text-text-primary bg-white border border-border hover:bg-gray-50 rounded-lg transition-colors"
                   >
                     <Download className="w-4 h-4" />
-                    Download CSV
+                    Export Data
                   </motion.button>
 
                   {/* Export Type Dropdown */}
@@ -245,28 +249,45 @@ export function ResultModal({
                         initial={{ opacity: 0, y: -8 }}
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: -8 }}
-                        className="absolute bottom-full left-0 right-0 mb-2 bg-white rounded-lg border border-border shadow-md p-2 space-y-1"
+                        className="absolute bottom-full left-0 right-0 mb-2 bg-white rounded-lg border border-border shadow-md p-2 space-y-1 z-10"
                       >
-                        <button
-                          onClick={() => handleDownload("msg91")}
-                          className="w-full text-left px-3 py-2 text-sm rounded-md hover:bg-gray-50 transition-colors"
-                        >
-                          <span className="font-medium">MSG91 only</span>
-                          <br />
-                          <span className="text-xs text-text-muted">
-                            2 columns: Mobile, Name
-                          </span>
-                        </button>
-                        <button
-                          onClick={() => handleDownload("full")}
-                          className="w-full text-left px-3 py-2 text-sm rounded-md hover:bg-gray-50 transition-colors"
-                        >
-                          <span className="font-medium">Full details</span>
-                          <br />
-                          <span className="text-xs text-text-muted">
-                            All available fields
-                          </span>
-                        </button>
+                        <p className="px-3 py-1.5 text-[10px] font-bold text-text-muted uppercase tracking-wider">
+                          MSG91 (Mobile & Name)
+                        </p>
+                        <div className="flex gap-1 px-1">
+                          <button
+                            onClick={() => handleDownload("msg91", "csv")}
+                            className="flex-1 text-center py-2 text-xs font-medium rounded-md hover:bg-gray-100 transition-colors bg-gray-50 border border-transparent hover:border-border"
+                          >
+                            CSV
+                          </button>
+                          <button
+                            onClick={() => handleDownload("msg91", "excel")}
+                            className="flex-1 text-center py-2 text-xs font-medium rounded-md hover:bg-gray-100 transition-colors bg-gray-50 border border-transparent hover:border-border text-emerald-700"
+                          >
+                            Excel
+                          </button>
+                        </div>
+
+                        <div className="border-t border-border my-1" />
+
+                        <p className="px-3 py-1.5 text-[10px] font-bold text-text-muted uppercase tracking-wider">
+                          Full Details (All Fields)
+                        </p>
+                        <div className="flex gap-1 px-1 pb-1">
+                          <button
+                            onClick={() => handleDownload("full", "csv")}
+                            className="flex-1 text-center py-2 text-xs font-medium rounded-md hover:bg-gray-100 transition-colors bg-gray-50 border border-transparent hover:border-border"
+                          >
+                            CSV
+                          </button>
+                          <button
+                            onClick={() => handleDownload("full", "excel")}
+                            className="flex-1 text-center py-2 text-xs font-medium rounded-md hover:bg-gray-100 transition-colors bg-gray-50 border border-transparent hover:border-border text-emerald-700"
+                          >
+                            Excel
+                          </button>
+                        </div>
                       </motion.div>
                     )}
                   </AnimatePresence>
