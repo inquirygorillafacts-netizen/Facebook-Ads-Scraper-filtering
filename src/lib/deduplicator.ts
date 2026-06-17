@@ -29,55 +29,77 @@ export function deduplicateAndMergeLeads(
   let updated = 0;
 
   for (const newLead of newLeads) {
-    // 1. Check for duplicates
-    let existingLead: RawLead | undefined;
+    // 1. Asset-Based Stripping (Independent Checks)
+    let mergeTarget: RawLead | undefined;
 
     if (newLead.phone && phoneMap.has(newLead.phone)) {
-      existingLead = phoneMap.get(newLead.phone);
-    } else if (newLead.email && emailMap.has(newLead.email.toLowerCase())) {
-      existingLead = emailMap.get(newLead.email.toLowerCase());
+      mergeTarget = phoneMap.get(newLead.phone);
+      newLead.phone = null; // Strip duplicate phone
+      newLead.phoneSource = null;
+    }
+    
+    if (newLead.email && emailMap.has(newLead.email.toLowerCase())) {
+      if (!mergeTarget) mergeTarget = emailMap.get(newLead.email.toLowerCase());
+      newLead.email = null; // Strip duplicate email
     }
 
-    if (existingLead) {
-      // 2. Duplicate found -> Skip insertion
+    if (!newLead.phone && !newLead.email) {
+      // 2. Both stripped -> Entirely Duplicate -> Skip insertion
       skipped++;
 
-      // 3. Smart Merging: Check if existing lead has missing fields that new lead has
-      let isModified = false;
+      // 3. Smart Merging into the matched target
+      if (mergeTarget) {
+        let isModified = false;
 
-      // Fields to potentially enrich
-      const enrichableFields: (keyof RawLead)[] = [
-        'name',
-        'email',
-        'facebook',
-        'instagram',
-        'website',
-        'adsLink',
-        'landingPage',
-      ];
+        const enrichableFields: (keyof RawLead)[] = [
+          'name',
+          'phone',
+          'phoneSource',
+          'email',
+          'facebook',
+          'instagram',
+          'website',
+          'adsLink',
+          'landingPage',
+        ];
 
-      for (const field of enrichableFields) {
-        if (!existingLead[field] && newLead[field]) {
-          // Type casting since we know the keys match and types are string | null
-          (existingLead as any)[field] = newLead[field];
-          isModified = true;
+        for (const field of enrichableFields) {
+          if (!mergeTarget[field] && newLead[field]) {
+            (mergeTarget as any)[field] = newLead[field];
+            isModified = true;
+          }
         }
-      }
 
-      // If missing data was filled, track it for Firestore updates
-      if (isModified && existingLead._campaignId && existingLead._chunkId !== undefined && existingLead._chunkIndex !== undefined) {
-        const updateKey = `${existingLead._campaignId}_${existingLead._chunkId}_${existingLead._chunkIndex}`;
-        
-        if (!leadsToUpdateMap.has(updateKey)) {
-          updated++;
+        if (isModified && mergeTarget._campaignId && mergeTarget._chunkId !== undefined && mergeTarget._chunkIndex !== undefined) {
+          const updateKey = `${mergeTarget._campaignId}_${mergeTarget._chunkId}_${mergeTarget._chunkIndex}`;
+          if (!leadsToUpdateMap.has(updateKey)) updated++;
+          leadsToUpdateMap.set(updateKey, mergeTarget);
         }
-        leadsToUpdateMap.set(updateKey, existingLead);
       }
     } else {
-      // 4. No duplicate found -> Mark for insertion
+      // 4. At least one unique asset survived -> Insert as fresh lead
+      // Wait, what if one field was stripped? We still want to merge the stripped field into the old lead!
+      if (mergeTarget) {
+         let isModified = false;
+         const enrichableFields: (keyof RawLead)[] = ['name', 'facebook', 'instagram', 'website', 'adsLink', 'landingPage'];
+         
+         for (const field of enrichableFields) {
+           if (!mergeTarget[field] && newLead[field]) {
+             (mergeTarget as any)[field] = newLead[field];
+             isModified = true;
+           }
+         }
+         
+         if (isModified && mergeTarget._campaignId && mergeTarget._chunkId !== undefined && mergeTarget._chunkIndex !== undefined) {
+           const updateKey = `${mergeTarget._campaignId}_${mergeTarget._chunkId}_${mergeTarget._chunkIndex}`;
+           if (!leadsToUpdateMap.has(updateKey)) updated++;
+           leadsToUpdateMap.set(updateKey, mergeTarget);
+         }
+      }
+
       leadsToInsert.push(newLead);
       
-      // Add to our maps so subsequent newLeads in the same file don't duplicate each other
+      // Add to maps so subsequent newLeads don't duplicate each other
       if (newLead.phone) phoneMap.set(newLead.phone, newLead);
       if (newLead.email) emailMap.set(newLead.email.toLowerCase(), newLead);
     }

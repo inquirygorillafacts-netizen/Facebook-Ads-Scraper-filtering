@@ -42,14 +42,14 @@ export async function parseMetaAdsCSV(file: File): Promise<ParsedFile> {
 
           for (const row of rows) {
             // Extract phone
-            const { phone, source: phoneSource } = getBestPhone(
+            let { phone, source: phoneSource } = getBestPhone(
               row[CSV_COLUMNS.PHONE] || null,
               row[CSV_COLUMNS.BODY_TEXT] || null
             );
 
             // Extract email (take first if multiple)
             const rawEmail = row[CSV_COLUMNS.EMAIL]?.trim() || null;
-            const email = rawEmail ? rawEmail.split(/[,;]/)[0].trim().toLowerCase() : null;
+            let email = rawEmail ? rawEmail.split(/[,;]/)[0].trim().toLowerCase() : null;
 
             // Must have phone OR email
             if (!phone && !email) {
@@ -57,40 +57,38 @@ export async function parseMetaAdsCSV(file: File): Promise<ParsedFile> {
               continue;
             }
 
-            // Check if we already have a lead with this phone or email in this file
-            let existingLead: RawLead | undefined;
+            // Asset-based stripping (Local Deduplication)
+            let mergeTarget: RawLead | undefined;
+
             if (phone && phoneMap.has(phone)) {
-              existingLead = phoneMap.get(phone);
-            } else if (email && emailMap.has(email)) {
-              existingLead = emailMap.get(email);
+              mergeTarget = phoneMap.get(phone);
+              phone = null; // Strip the duplicate phone
+              phoneSource = null;
             }
 
-            if (existingLead) {
-              // It's a duplicate within the file
+            if (email && emailMap.has(email)) {
+              if (!mergeTarget) mergeTarget = emailMap.get(email);
+              email = null; // Strip the duplicate email
+            }
+
+            // If BOTH were stripped (or if the only thing it had was stripped)
+            if (!phone && !email) {
               duplicatesSkipped++;
               
-              // Smart merge missing fields within the file
-              if (!existingLead.name && row[CSV_COLUMNS.PAGE_NAME]) existingLead.name = row[CSV_COLUMNS.PAGE_NAME].trim();
-              if (!existingLead.facebook && row[CSV_COLUMNS.FACEBOOK]) existingLead.facebook = row[CSV_COLUMNS.FACEBOOK].trim();
-              if (!existingLead.instagram && row[CSV_COLUMNS.INSTAGRAM]) existingLead.instagram = row[CSV_COLUMNS.INSTAGRAM].trim();
-              const url = normalizeUrl(row[CSV_COLUMNS.WEBSITE_URL]?.trim() || null);
-              if (!existingLead.website && url) existingLead.website = url;
-              if (!existingLead.adsLink && row[CSV_COLUMNS.FACEBOOK_AD_URL]) existingLead.adsLink = row[CSV_COLUMNS.FACEBOOK_AD_URL].trim();
-              if (!existingLead.landingPage && row[CSV_COLUMNS.LINK_URL]) existingLead.landingPage = row[CSV_COLUMNS.LINK_URL].trim();
-              
-              // Link them so future searches find this merged lead
-              if (phone && !phoneMap.has(phone)) {
-                 existingLead.phone = phone;
-                 phoneMap.set(phone, existingLead);
-              }
-              if (email && !emailMap.has(email)) {
-                 existingLead.email = email;
-                 emailMap.set(email, existingLead);
+              // Smart merge missing fields into the merge target
+              if (mergeTarget) {
+                if (!mergeTarget.name && row[CSV_COLUMNS.PAGE_NAME]) mergeTarget.name = row[CSV_COLUMNS.PAGE_NAME].trim();
+                if (!mergeTarget.facebook && row[CSV_COLUMNS.FACEBOOK]) mergeTarget.facebook = row[CSV_COLUMNS.FACEBOOK].trim();
+                if (!mergeTarget.instagram && row[CSV_COLUMNS.INSTAGRAM]) mergeTarget.instagram = row[CSV_COLUMNS.INSTAGRAM].trim();
+                const url = normalizeUrl(row[CSV_COLUMNS.WEBSITE_URL]?.trim() || null);
+                if (!mergeTarget.website && url) mergeTarget.website = url;
+                if (!mergeTarget.adsLink && row[CSV_COLUMNS.FACEBOOK_AD_URL]) mergeTarget.adsLink = row[CSV_COLUMNS.FACEBOOK_AD_URL].trim();
+                if (!mergeTarget.landingPage && row[CSV_COLUMNS.LINK_URL]) mergeTarget.landingPage = row[CSV_COLUMNS.LINK_URL].trim();
               }
               continue;
             }
 
-            // Track counts
+            // Track counts based on what SURVIVED the stripping
             if (phone) phoneCount++;
             if (email) emailCount++;
             if (phone && email) bothCount++;
