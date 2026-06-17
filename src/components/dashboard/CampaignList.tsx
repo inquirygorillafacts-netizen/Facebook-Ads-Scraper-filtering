@@ -34,10 +34,10 @@ export function CampaignList({ campaigns }: CampaignListProps) {
       transition={{ delay: 0.3, duration: 0.4 }}
       className="bg-white rounded-xl border border-border overflow-hidden"
     >
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto overflow-y-auto max-h-[380px]">
         <table className="w-full">
-          <thead>
-            <tr className="border-b border-border bg-gray-50/50">
+          <thead className="sticky top-0 z-10 bg-gray-50 border-b border-border shadow-sm">
+            <tr>
               <th className="text-left text-xs font-medium text-text-muted uppercase tracking-wider px-5 py-3">
                 #
               </th>
@@ -62,7 +62,7 @@ export function CampaignList({ campaigns }: CampaignListProps) {
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
-            {campaigns.slice(0, 10).map((campaign, idx) => (
+            {campaigns.map((campaign, idx) => (
               <tr
                 key={campaign.id}
                 className="hover:bg-gray-50/50 transition-colors duration-100"

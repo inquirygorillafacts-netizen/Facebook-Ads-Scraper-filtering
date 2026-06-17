@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
-import { Users, FolderOpen, Phone, Percent, Plus, Database } from "lucide-react";
+import { Users, FolderOpen, Phone, Percent, Plus, Database, Mail } from "lucide-react";
 import { useAppStore } from "@/store/useAppStore";
 import { StatsCard, StatsCardSkeleton } from "@/components/dashboard/StatsCard";
 import { CampaignList } from "@/components/dashboard/CampaignList";
@@ -21,15 +21,17 @@ export default function DashboardPage() {
   }, []);
 
   const phoneLeads = leads.filter((l) => l.phone);
+  const emailLeads = leads.filter((l) => l.email);
   const phoneCoverage =
     totalLeads > 0 ? Math.round((phoneLeads.length / totalLeads) * 100) : 0;
 
   return (
     <div className="max-w-6xl mx-auto space-y-8">
       {/* Stats Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-5">
         {isLoading ? (
           <>
+            <StatsCardSkeleton />
             <StatsCardSkeleton />
             <StatsCardSkeleton />
             <StatsCardSkeleton />
@@ -61,6 +63,12 @@ export default function DashboardPage() {
               format="percent"
               icon={<Percent className="w-5 h-5" />}
               delay={0.3}
+            />
+            <StatsCard
+              label="With Email"
+              value={emailLeads.length}
+              icon={<Mail className="w-5 h-5" />}
+              delay={0.4}
             />
           </>
         )}
