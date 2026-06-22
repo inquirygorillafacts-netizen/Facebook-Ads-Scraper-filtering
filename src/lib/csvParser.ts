@@ -1,9 +1,9 @@
 /**
  * Meta Ads Library CSV parser.
- * Groups rows by Page ID, merges duplicates, extracts clean lead data.
+ * Groups rows by Page ID, extracts multiple unique phone numbers per row, merges duplicates.
  */
 import Papa from 'papaparse';
-import { getBestPhone } from './phoneExtractor';
+import { extractAllIndianPhones } from './phoneExtractor';
 import { CSV_COLUMNS } from '../constants';
 import type { RawLead, ParsedFile } from '../types';
 
@@ -41,87 +41,100 @@ export async function parseMetaAdsCSV(file: File): Promise<ParsedFile> {
           const emailMap = new Map<string, RawLead>();
 
           for (const row of rows) {
-            // Extract phone
-            let { phone, source: phoneSource } = getBestPhone(
-              row[CSV_COLUMNS.PHONE] || null,
-              row[CSV_COLUMNS.BODY_TEXT] || null
-            );
+            // Extract all unique valid Indian phones from ALL columns of this row
+            const allPhonesInRow = new Set<string>();
+            for (const val of Object.values(row)) {
+              if (val && val.trim()) {
+                const phones = extractAllIndianPhones(val);
+                phones.forEach(p => allPhonesInRow.add(p));
+              }
+            }
+            const phonesArray = Array.from(allPhonesInRow);
 
             // Extract email (take first if multiple)
             const rawEmail = row[CSV_COLUMNS.EMAIL]?.trim() || null;
             let email = rawEmail ? rawEmail.split(/[,;]/)[0].trim().toLowerCase() : null;
 
-            // Must have phone OR email
-            if (!phone && !email) {
+            // Must have at least one phone OR an email
+            if (phonesArray.length === 0 && !email) {
               noContactSkipped++;
               continue;
             }
 
-            // Asset-based stripping (Local Deduplication)
-            let mergeTarget: RawLead | undefined;
+            // Create a lead for EACH phone found. If no phone, create 1 lead for the email.
+            const numLeadsToCreate = phonesArray.length > 0 ? phonesArray.length : 1;
 
-            if (phone && phoneMap.has(phone)) {
-              mergeTarget = phoneMap.get(phone);
-              phone = null; // Strip the duplicate phone
-              phoneSource = null;
-            }
-
-            if (email && emailMap.has(email)) {
-              if (!mergeTarget) mergeTarget = emailMap.get(email);
-              email = null; // Strip the duplicate email
-            }
-
-            // If BOTH were stripped (or if the only thing it had was stripped)
-            if (!phone && !email) {
-              duplicatesSkipped++;
+            for (let i = 0; i < numLeadsToCreate; i++) {
+              let currentPhone = phonesArray.length > 0 ? phonesArray[i] : null;
               
-              // Smart merge missing fields into the merge target
-              if (mergeTarget) {
-                if (!mergeTarget.name && row[CSV_COLUMNS.PAGE_NAME]) mergeTarget.name = row[CSV_COLUMNS.PAGE_NAME].trim();
-                if (!mergeTarget.facebook && row[CSV_COLUMNS.FACEBOOK]) mergeTarget.facebook = row[CSV_COLUMNS.FACEBOOK].trim();
-                if (!mergeTarget.instagram && row[CSV_COLUMNS.INSTAGRAM]) mergeTarget.instagram = row[CSV_COLUMNS.INSTAGRAM].trim();
-                const url = normalizeUrl(row[CSV_COLUMNS.WEBSITE_URL]?.trim() || null);
-                if (!mergeTarget.website && url) mergeTarget.website = url;
-                if (!mergeTarget.adsLink && row[CSV_COLUMNS.FACEBOOK_AD_URL]) mergeTarget.adsLink = row[CSV_COLUMNS.FACEBOOK_AD_URL].trim();
-                if (!mergeTarget.landingPage && row[CSV_COLUMNS.LINK_URL]) mergeTarget.landingPage = row[CSV_COLUMNS.LINK_URL].trim();
+              // Only attach email to the FIRST phone variant so we don't unnecessarily strip duplicates 
+              // for the same contact that has 10 phones and 1 email. 
+              let currentEmail = i === 0 ? email : null;
+
+              // Asset-based stripping (Local Deduplication within this file)
+              let mergeTarget: RawLead | undefined;
+
+              if (currentPhone && phoneMap.has(currentPhone)) {
+                mergeTarget = phoneMap.get(currentPhone);
+                currentPhone = null; // Strip the duplicate phone
               }
-              continue;
+
+              if (currentEmail && emailMap.has(currentEmail)) {
+                if (!mergeTarget) mergeTarget = emailMap.get(currentEmail);
+                currentEmail = null; // Strip the duplicate email
+              }
+
+              // If BOTH were stripped (or if the only thing it had was stripped)
+              if (!currentPhone && !currentEmail) {
+                duplicatesSkipped++;
+                
+                // Smart merge missing fields into the merge target
+                if (mergeTarget) {
+                  if (!mergeTarget.name && row[CSV_COLUMNS.PAGE_NAME]) mergeTarget.name = row[CSV_COLUMNS.PAGE_NAME].trim();
+                  if (!mergeTarget.facebook && row[CSV_COLUMNS.FACEBOOK]) mergeTarget.facebook = row[CSV_COLUMNS.FACEBOOK].trim();
+                  if (!mergeTarget.instagram && row[CSV_COLUMNS.INSTAGRAM]) mergeTarget.instagram = row[CSV_COLUMNS.INSTAGRAM].trim();
+                  const url = normalizeUrl(row[CSV_COLUMNS.WEBSITE_URL]?.trim() || null);
+                  if (!mergeTarget.website && url) mergeTarget.website = url;
+                  if (!mergeTarget.adsLink && row[CSV_COLUMNS.FACEBOOK_AD_URL]) mergeTarget.adsLink = row[CSV_COLUMNS.FACEBOOK_AD_URL].trim();
+                  if (!mergeTarget.landingPage && row[CSV_COLUMNS.LINK_URL]) mergeTarget.landingPage = row[CSV_COLUMNS.LINK_URL].trim();
+                }
+                continue;
+              }
+
+              // Track counts based on what SURVIVED the stripping
+              if (currentPhone) phoneCount++;
+              if (currentEmail) emailCount++;
+              if (currentPhone && currentEmail) bothCount++;
+
+              // Use a random UUID for the lead ID since one row can spawn multiple leads
+              const leadId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15);
+
+              const lead: RawLead = {
+                id: leadId,
+                name: row[CSV_COLUMNS.PAGE_NAME]?.trim() || null,
+                phone: currentPhone,
+                phoneSource: currentPhone ? 'direct' : null, // Not tracking BodyText specifically anymore as we scan all
+                email: currentEmail,
+                facebook: row[CSV_COLUMNS.FACEBOOK]?.trim() || row[CSV_COLUMNS.PAGE_PROFILE_URI]?.trim() || null,
+                instagram: row[CSV_COLUMNS.INSTAGRAM]?.trim() || null,
+                website: normalizeUrl(row[CSV_COLUMNS.WEBSITE_URL]?.trim() || null),
+                adsLink: row[CSV_COLUMNS.FACEBOOK_AD_URL]?.trim() || null,
+                landingPage: row[CSV_COLUMNS.LINK_URL]?.trim() || null,
+                whatsappSent: false,
+                addedAt: new Date().toISOString(),
+              };
+
+              leads.push(lead);
+              if (currentPhone) phoneMap.set(currentPhone, lead);
+              if (currentEmail) emailMap.set(currentEmail, lead);
             }
-
-            // Track counts based on what SURVIVED the stripping
-            if (phone) phoneCount++;
-            if (email) emailCount++;
-            if (phone && email) bothCount++;
-
-            // Use a random UUID for the lead ID since one page can have multiple leads
-            const leadId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15);
-
-            const lead: RawLead = {
-              id: leadId,
-              name: row[CSV_COLUMNS.PAGE_NAME]?.trim() || null,
-              phone,
-              phoneSource,
-              email,
-              facebook: row[CSV_COLUMNS.FACEBOOK]?.trim() ||
-                row[CSV_COLUMNS.PAGE_PROFILE_URI]?.trim() || null,
-              instagram: row[CSV_COLUMNS.INSTAGRAM]?.trim() || null,
-              website: normalizeUrl(row[CSV_COLUMNS.WEBSITE_URL]?.trim() || null),
-              adsLink: row[CSV_COLUMNS.FACEBOOK_AD_URL]?.trim() || null,
-              landingPage: row[CSV_COLUMNS.LINK_URL]?.trim() || null,
-              whatsappSent: false,
-              addedAt: new Date().toISOString(),
-            };
-
-            leads.push(lead);
-            if (phone) phoneMap.set(phone, lead);
-            if (email) emailMap.set(email, lead);
           }
 
           resolve({
             leads,
             stats: {
               totalRawRows,
-              uniqueCompanies: leads.length, // Renaming logical meaning to "Unique Contacts"
+              uniqueCompanies: leads.length, // Total extracted valid records
               validLeads: leads.length,
               duplicatesSkipped,
               noContactSkipped,
@@ -137,19 +150,6 @@ export async function parseMetaAdsCSV(file: File): Promise<ParsedFile> {
       error: (error: Error) => reject(error),
     });
   });
-}
-
-/** Merge multiple rows for the same Page ID — take first non-empty value per field. */
-function mergeRows(rows: Record<string, string>[]): Record<string, string> {
-  const merged: Record<string, string> = {};
-  for (const row of rows) {
-    for (const [key, value] of Object.entries(row)) {
-      if (!merged[key] && value?.trim()) {
-        merged[key] = value.trim();
-      }
-    }
-  }
-  return merged;
 }
 
 /** Normalize URL: add https:// prefix, filter out junk/placeholder URLs. */

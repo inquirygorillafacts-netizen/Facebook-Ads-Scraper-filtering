@@ -7,6 +7,7 @@ import { Users, FolderOpen, Phone, Percent, Plus, Database, Mail } from "lucide-
 import { useAppStore } from "@/store/useAppStore";
 import { StatsCard, StatsCardSkeleton } from "@/components/dashboard/StatsCard";
 import { CampaignList } from "@/components/dashboard/CampaignList";
+import { GlobalStatsCard } from "@/components/dashboard/GlobalStatsCard";
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -27,6 +28,9 @@ export default function DashboardPage() {
 
   return (
     <div className="max-w-6xl mx-auto space-y-8">
+      {/* Real-time Global Sync Card */}
+      <GlobalStatsCard />
+
       {/* Stats Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-5">
         {isLoading ? (

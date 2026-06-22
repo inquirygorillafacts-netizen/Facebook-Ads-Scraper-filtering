@@ -1,104 +1,46 @@
 /**
- * Phone number extraction and cleaning utilities for Indian phone numbers.
- * Handles Meta Ads Library phone column formats and Body Text fallback.
+ * Phone number extraction and cleaning utilities for strict Indian mobile numbers.
  */
-
-export interface PhoneResult {
-  phone: string | null;
-  source: 'direct' | 'bodyText' | null;
-}
 
 /**
- * Check if a raw phone string is a toll-free number (1800-xxx).
+ * Extracts ALL unique, valid Indian mobile numbers from a given text.
+ * Strict Rule applied: Must be 10 digits and start with 6, 7, 8, or 9.
  */
-function isTollFree(raw: string): boolean {
-  const digits = raw.replace(/\D/g, '');
-  if (digits.startsWith('1800')) return true;
-  if (digits.startsWith('911800')) return true;
-  return false;
-}
+export function extractAllIndianPhones(text: string | null | undefined): string[] {
+  if (!text) return [];
 
-/**
- * Extract toll-free number from raw string.
- * Returns the full toll-free number as-is (not 10-digit cleaned).
- */
-function extractTollFree(raw: string): string | null {
-  const digits = raw.replace(/\D/g, '');
-  if (digits.startsWith('911800')) return digits.slice(2);
-  if (digits.startsWith('1800')) return digits;
-  return null;
-}
+  // 1. Remove spaces, dashes, dots, parentheses to handle cases like "987-654 3210"
+  const compactText = String(text).replace(/[\s\-\(\)\.]/g, '');
 
-/**
- * Clean a phone string to a valid 10-digit Indian number.
- * Returns the first valid number found.
- */
-export function cleanPhone(rawPhone: string | null | undefined): string | null {
-  if (!rawPhone) return null;
+  // 2. Split by multiple delimiters (/, comma, semicolon, pipe, newline)
+  // Need to escape backslash for newline properly, or just use literal newline.
+  const parts = compactText.split(/[\/,;| \n]/);
+  
+  const validPhones = new Set<string>();
 
-  const candidates = String(rawPhone).split(/[,;]/);
+  for (const part of parts) {
+    // 3. Keep only digits
+    const digits = part.replace(/\D/g, '');
+    if (!digits) continue;
 
-  for (const candidate of candidates) {
-    const trimmed = candidate.trim();
+    let core: string | null = null;
 
-    // Check for toll-free first
-    if (isTollFree(trimmed)) {
-      return extractTollFree(trimmed);
-    }
-
-    let digits = trimmed.replace(/\D/g, '');
-
-    // Remove leading country code 91
-    if (digits.startsWith('91') && digits.length === 12) {
-      digits = digits.slice(2);
-    } else if (digits.startsWith('0') && digits.length === 11) {
-      digits = digits.slice(1);
-    }
-
-    // Must be exactly 10 digits
+    // 4. Normalize to 10 digits by stripping country codes or STD prefixes
     if (digits.length === 10) {
-      return digits;
+      core = digits;
+    } else if (digits.length === 11 && digits.startsWith('0')) {
+      core = digits.slice(1);
+    } else if (digits.length === 12 && digits.startsWith('91')) {
+      core = digits.slice(2);
+    } else if (digits.length === 13 && digits.startsWith('091')) {
+      core = digits.slice(3);
+    }
+
+    // 5. Strict Mobile Validation: Must be 10 digits AND start with 6, 7, 8, or 9
+    if (core && core.length === 10 && /^[6789]/.test(core)) {
+      validPhones.add(core);
     }
   }
 
-  return null;
-}
-
-/**
- * Extract phone number from ad Body Text using regex.
- * Finds any 10 digit number.
- */
-export function extractPhoneFromBodyText(bodyText: string | null | undefined): string | null {
-  if (!bodyText) return null;
-
-  // We look for any 10 digit number sequence
-  const pattern = /(?<!\d)\d{10}(?!\d)/g;
-  const matches = String(bodyText).match(pattern);
-
-  if (matches && matches.length > 0) {
-    return matches[0];
-  }
-
-  return null;
-}
-
-/**
- * Main function: get best phone for a lead.
- * Tries Phone column first, then Body Text fallback.
- */
-export function getBestPhone(
-  phoneColumn: string | null,
-  bodyText: string | null
-): PhoneResult {
-  const directPhone = cleanPhone(phoneColumn);
-  if (directPhone) {
-    return { phone: directPhone, source: 'direct' };
-  }
-
-  const fromBody = extractPhoneFromBodyText(bodyText);
-  if (fromBody) {
-    return { phone: fromBody, source: 'bodyText' };
-  }
-
-  return { phone: null, source: null };
+  return Array.from(validPhones);
 }
